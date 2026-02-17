@@ -1,9 +1,15 @@
-[target.'cfg(all(target_arch = "arm", target_os = "none"))']
-# runner = "probe-rs run --chip RP2040"
-runner = "picotool load --update --verify --execute -t elf"
-
 [build]
-target = "thumbv6m-none-eabi"        # Cortex-M0 and Cortex-M0+
+target = "riscv32imc-unknown-none-elf"
+
+[target.'cfg(target_arch = "riscv32")']
+runner    = "espflash flash --monitor"
+rustflags = [
+  "-C", "link-arg=-Tlinkall.x",
+  "-C", "force-frame-pointers",
+]
 
 [env]
-DEFMT_LOG = "debug"
+ESP_LOG = "info"
+
+[unstable]
+build-std = ["core", "alloc"]

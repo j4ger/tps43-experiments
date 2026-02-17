@@ -18,11 +18,13 @@
       {
         devShells.default = with pkgs; mkShell {
           buildInputs = [
-            (rust-bin.beta.latest.default.override {
+            (rust-bin.selectLatestNightlyWith (toolchain: toolchain.default.override {
               extensions = [ "rust-src" ];
-              targets = [ "thumbv6m-none-eabi" ];
-            })
-            picotool
+              targets = [ "riscv32imc-unknown-none-elf" ];
+            }))
+            espflash
+            rust-analyzer
+            zed-editor
           ];
 
           shellHook = ''

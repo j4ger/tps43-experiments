@@ -7,34 +7,29 @@ use logger::*;
 mod read_task;
 use read_task::*;
 
-mod blinker;
-use blinker::*;
-
-use assign_resources::assign_resources;
 use embassy_executor::Spawner;
-use embassy_rp::{Peri, peripherals};
-use {defmt_rtt as _, panic_probe as _};
+use esp_backtrace as _;
+use esp_hal::{interrupt::software::SoftwareInterruptControl, timer::timg::TimerGroup};
 
-assign_resources! {
-    led: Led {
-        led: PIN_25,
-    },
-    trackpad: Trackpad {
-        rdy: PIN_9,
-        rst: PIN_8,
-        // I2C1
-        scl: PIN_7,
-        sda: PIN_6,
-    }
-}
+// assign_resources! {
+//     trackpad: Trackpad {
+//         rdy: GPIO2,
+//         rst: GPIO3,
+//         sda: GPIO4,
+//         scl: GPIO5,
+//     }
+// }
 
-#[embassy_executor::main]
+esp_bootloader_esp_idf::esp_app_desc!();
+
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
-    let p = embassy_rp::init(Default::default());
+    esp_println::logger::init_logger_from_env();
 
-    let r = split_resources!(p);
-    let usb = p.USB;
+    let p = esp_hal::init(Default::default());
+    let sw_int = SoftwareInterruptControl::new(p.SW_INTERRUPT);
+    let timg0 = TimerGroup::new(p.TIMG0);
+    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
 
-    spawner.spawn(logger_task(usb)).unwrap();
-    spawner.spawn(blinker_task(r.led)).unwrap();
+    spawner.spawn(logger_task()).unwrap();
 }
