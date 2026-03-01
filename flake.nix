@@ -23,6 +23,7 @@
               targets = [ "thumbv6m-none-eabi" ];
             })
             picotool
+            rust-analyzer
           ];
 
           shellHook = ''
