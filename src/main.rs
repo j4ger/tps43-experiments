@@ -10,6 +10,9 @@ use read_task::*;
 mod blinker;
 use blinker::*;
 
+mod vibrator;
+use vibrator::*;
+
 use assign_resources::assign_resources;
 use embassy_executor::Spawner;
 use embassy_rp::{Peri, peripherals};
@@ -52,6 +55,9 @@ async fn main(spawner: Spawner) {
 
     log::info!("main: spawning read_task");
     spawner.spawn(read_task(r.trackpad)).unwrap();
+
+    log::info!("main: spawning vibrator_task");
+    spawner.spawn(vibrator_task(r.vibrator)).unwrap();
 
     log::info!("main: all tasks spawned");
 }
