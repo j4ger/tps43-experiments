@@ -1,39 +1,26 @@
-use core::convert::Infallible;
+use core::{
+    convert::Infallible,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use embassy_rp::{
     gpio::{Input, Level, Output, Pull},
     i2c::{self, Blocking, Config},
     peripherals::I2C1,
 };
-use embassy_time::{Duration, Timer, block_for};
+use embassy_time::Timer;
 use iqs5xx::IQS5xx;
 use log::{info, warn};
 use usbd_hid::descriptor::MouseReport;
 
 use crate::{Trackpad, usb_hid::MOUSE_REPORT_CHANNEL};
 
-// ---------------------------------------------------------------------------
-// Delay adapter
-// ---------------------------------------------------------------------------
-
-/// Wraps `embassy_time::block_for` to satisfy iqs5xx's `DelayMs<u32>` bound
-/// (embedded-hal 0.2).  This is blocking, which is acceptable during the
-/// short init/reset phase at task start-up.
-struct EmbassyDelay;
-
-impl embedded_hal_02::blocking::delay::DelayMs<u32> for EmbassyDelay {
-    fn delay_ms(&mut self, ms: u32) {
-        block_for(Duration::from_millis(ms as u64));
-    }
-}
+static RDY_LEVEL: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
-// I²C compatibility wrapper  (embedded-hal 1.0 → 0.2)
+// I²C compatibility wrapper (embedded-hal 1.0 -> 0.2)
 // ---------------------------------------------------------------------------
 
-/// Newtype that adapts an embedded-hal **1.0** `I2c` implementation to the
-/// embedded-hal **0.2** `Write` + `WriteRead` blocking traits that iqs5xx
-/// requires.
 struct I2cCompat<T>(T);
 
 impl<T> embedded_hal_02::blocking::i2c::Write for I2cCompat<T>
@@ -59,25 +46,27 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// GPIO compatibility wrappers  (embedded-hal 1.0 → 0.2)
+// RDY ready-level proxy
 // ---------------------------------------------------------------------------
 
-/// Adapts an embassy-rp `Input` pin to the embedded-hal 0.2 `InputPin` trait.
-struct InputCompat<'d>(Input<'d>);
+struct RdyProxy;
 
-impl<'d> embedded_hal_02::digital::v2::InputPin for InputCompat<'d> {
+impl embedded_hal_02::digital::v2::InputPin for RdyProxy {
     type Error = Infallible;
 
     fn is_high(&self) -> Result<bool, Self::Error> {
-        Ok(self.0.is_high())
+        Ok(RDY_LEVEL.load(Ordering::Acquire))
     }
 
     fn is_low(&self) -> Result<bool, Self::Error> {
-        Ok(self.0.is_low())
+        Ok(!RDY_LEVEL.load(Ordering::Acquire))
     }
 }
 
-/// Adapts an embassy-rp `Output` pin to the embedded-hal 0.2 `OutputPin` trait.
+// ---------------------------------------------------------------------------
+// GPIO compatibility wrapper for reset pin
+// ---------------------------------------------------------------------------
+
 struct OutputCompat<'d>(Output<'d>);
 
 impl<'d> embedded_hal_02::digital::v2::OutputPin for OutputCompat<'d> {
@@ -95,73 +84,90 @@ impl<'d> embedded_hal_02::digital::v2::OutputPin for OutputCompat<'d> {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async fn wait_rdy_high(rdy: &mut Input<'_>) {
+    if !rdy.is_high() {
+        rdy.wait_for_high().await;
+    }
+    RDY_LEVEL.store(true, Ordering::Release);
+}
+
+async fn wait_rdy_low(rdy: &mut Input<'_>) {
+    if !rdy.is_low() {
+        rdy.wait_for_low().await;
+    }
+    RDY_LEVEL.store(false, Ordering::Release);
+}
+
+// ---------------------------------------------------------------------------
 // Task
 // ---------------------------------------------------------------------------
 
 #[embassy_executor::task]
 pub async fn read_task(trackpad: Trackpad) {
-    // Build a *blocking* I²C peripheral – no interrupt handler required.
     let bus: i2c::I2c<'_, I2C1, Blocking> =
         i2c::I2c::new_blocking(trackpad.i2c, trackpad.scl, trackpad.sda, Config::default());
 
-    // RDY is an open-drain active-high output from the IQS5xx, so floating
-    // input is correct.  RST is active-low; drive it high at rest.
-    let rdy = Input::new(trackpad.rdy, Pull::None);
-    let rst = Output::new(trackpad.rst, Level::High);
+    let mut rdy = Input::new(trackpad.rdy, Pull::None);
+    let mut rst = Output::new(trackpad.rst, Level::High);
 
-    let mut delay = EmbassyDelay;
+    info!("IQS5xx: task started");
+    info!("IQS5xx: configuring blocking I2C + interrupt-driven RDY complete");
+
+    // Manual reset before handing RST ownership to the driver.
+    info!("IQS5xx: resetting…");
+    rst.set_low();
+    Timer::after_millis(10).await;
+    rst.set_high();
+    Timer::after_millis(10).await;
+    info!("IQS5xx: reset complete");
+
+    info!("IQS5xx: waiting for first RDY high…");
+    wait_rdy_high(&mut rdy).await;
+    info!("IQS5xx: first RDY high observed");
+
     let mut device = IQS5xx::new(
         I2cCompat(bus),
         iqs5xx::DEFAULT_I2C_ADDR,
-        InputCompat(rdy),
+        RdyProxy,
         OutputCompat(rst),
     );
 
-    // -----------------------------------------------------------------------
-    // Reset and initialise
-    // -----------------------------------------------------------------------
-
-    info!("IQS5xx: task started");
-    info!("IQS5xx: configuring blocking I2C + GPIO complete");
-    info!("IQS5xx: resetting…");
-    if let Err(err) = device.reset(&mut delay) {
-        warn!("IQS5xx: reset failed: {:?}", err);
-        return;
-    }
-
-    info!("IQS5xx: reset complete");
-    info!("IQS5xx: waiting for ready high…");
-    if let Err(err) = device.poll_ready(&mut delay) {
-        warn!("IQS5xx: ready-high wait failed: {:?}", err);
-        return;
-    }
-
-    info!("IQS5xx: ready high observed, sending init");
+    info!("IQS5xx: sending init");
     if let Err(err) = device.init() {
         warn!("IQS5xx: init failed: {:?}", err);
         return;
     }
+
+    wait_rdy_low(&mut rdy).await;
     info!("IQS5xx: initialised");
 
     // -----------------------------------------------------------------------
-    // Read and log device information
+    // Read and log device information using one interrupt-driven transaction.
     // -----------------------------------------------------------------------
 
-    info!("IQS5xx: reading device info…");
-    let info_result = device.transact(&mut delay, |d| {
-        let info = d.get_info()?;
-        let active_timeout = d.read_reg_u8(0x584)?;
-        let idle_touch_timeout = d.read_reg_u8(0x585)?;
-        let idle_timeout = d.read_reg_u8(0x586)?;
-        let i2c_timeout = d.read_reg_u8(0x58a)?;
-        Ok((
+    info!("IQS5xx: waiting for RDY to read device info…");
+    wait_rdy_high(&mut rdy).await;
+
+    let info_result = (|| {
+        let info = device.get_info()?;
+        let active_timeout = device.read_reg_u8(0x584)?;
+        let idle_touch_timeout = device.read_reg_u8(0x585)?;
+        let idle_timeout = device.read_reg_u8(0x586)?;
+        let i2c_timeout = device.read_reg_u8(0x58a)?;
+        device.end_session()?;
+        Ok::<_, iqs5xx::Error>((
             info,
             active_timeout,
             idle_touch_timeout,
             idle_timeout,
             i2c_timeout,
         ))
-    });
+    })();
+
+    wait_rdy_low(&mut rdy).await;
 
     match info_result {
         Ok((info, active_to, idle_touch_to, idle_to, i2c_to)) => {
@@ -180,26 +186,20 @@ pub async fn read_task(trackpad: Trackpad) {
         }
         Err(err) => {
             warn!("IQS5xx: failed to read device info: {:?}", err);
-            warn!("IQS5xx: continuing into poll loop anyway");
         }
     }
 
     // -----------------------------------------------------------------------
-    // Poll loop – use `try_transact` so we never spin-block the executor.
-    // We yield with `Timer::after_millis` between each poll attempt, giving
-    // other Embassy tasks (blinker, USB logger, …) a chance to run.
+    // Interrupt-driven report loop.
     // -----------------------------------------------------------------------
 
-    info!("IQS5xx: entering poll loop");
-    let mut idle_polls: u32 = 0;
+    info!("IQS5xx: entering interrupt-driven poll loop");
 
     loop {
+        wait_rdy_high(&mut rdy).await;
+
         match device.try_transact(|d| d.get_report()) {
             Ok(Some(report)) => {
-                idle_polls = 0;
-
-                // Raw register dump – always printed so noise-free idle is
-                // visible without extra filtering.
                 info!(
                     "report  events={:02x}:{:02x}  sysinfo={:02x}:{:02x}  \
                      fingers={}  rel=({}, {})",
@@ -235,25 +235,19 @@ pub async fn read_task(trackpad: Trackpad) {
                         .await;
                 }
 
-                // Interpret the raw report as a high-level event and log it.
                 let event = iqs5xx::Event::from(&report);
                 if event != iqs5xx::Event::None {
                     info!("Event: {:?}", event);
                 }
             }
-
-            // Device not yet ready – perfectly normal, just wait and retry.
             Ok(None) => {
-                idle_polls += 1;
-                if idle_polls % 200 == 0 {
-                    info!("IQS5xx: still waiting for RDY/report...");
-                }
+                warn!("IQS5xx: RDY high fired but no report was available");
             }
-
-            Err(err) => warn!("IQS5xx: try_transact error: {:?}", err),
+            Err(err) => {
+                warn!("IQS5xx: try_transact error: {:?}", err);
+            }
         }
 
-        // Yield to the executor; adjust the interval to taste.
-        Timer::after_millis(5).await;
+        wait_rdy_low(&mut rdy).await;
     }
 }
