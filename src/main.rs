@@ -25,6 +25,13 @@ assign_resources! {
         // I2C1
         scl: PIN_7,
         sda: PIN_6,
+        i2c: I2C1,
+    }
+    vibrator: Vibrator {
+        // I2C0
+        scl: PIN_21,
+        sda: PIN_20,
+        i2c: I2C0
     }
 }
 
@@ -36,5 +43,15 @@ async fn main(spawner: Spawner) {
     let usb = p.USB;
 
     spawner.spawn(logger_task(usb)).unwrap();
+
+    embassy_time::Timer::after_millis(100).await;
+
+    log::info!("main: logger started");
+    log::info!("main: spawning blinker_task");
     spawner.spawn(blinker_task(r.led)).unwrap();
+
+    log::info!("main: spawning read_task");
+    spawner.spawn(read_task(r.trackpad)).unwrap();
+
+    log::info!("main: all tasks spawned");
 }
