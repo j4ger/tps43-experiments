@@ -223,21 +223,49 @@ pub async fn read_task(trackpad: Trackpad) {
                 let x = report.rel_x.clamp(i8::MIN as i16, i8::MAX as i16) as i8;
                 let y = report.rel_y.clamp(i8::MIN as i16, i8::MAX as i16) as i8;
 
-                if x != 0 || y != 0 {
-                    MOUSE_REPORT_CHANNEL
-                        .send(MouseReport {
-                            buttons: 0,
-                            x,
-                            y,
-                            wheel: 0,
-                            pan: 0,
-                        })
-                        .await;
-                }
-
                 let event = iqs5xx::Event::from(&report);
-                if event != iqs5xx::Event::None {
-                    info!("Event: {:?}", event);
+
+                match event {
+                    iqs5xx::Event::SingleTap { .. } => {
+                        info!("Event: {:?}", event);
+
+                        MOUSE_REPORT_CHANNEL
+                            .send(MouseReport {
+                                buttons: 1,
+                                x: 0,
+                                y: 0,
+                                wheel: 0,
+                                pan: 0,
+                            })
+                            .await;
+
+                        MOUSE_REPORT_CHANNEL
+                            .send(MouseReport {
+                                buttons: 0,
+                                x: 0,
+                                y: 0,
+                                wheel: 0,
+                                pan: 0,
+                            })
+                            .await;
+                    }
+                    _ => {
+                        if x != 0 || y != 0 {
+                            MOUSE_REPORT_CHANNEL
+                                .send(MouseReport {
+                                    buttons: 0,
+                                    x,
+                                    y,
+                                    wheel: 0,
+                                    pan: 0,
+                                })
+                                .await;
+                        }
+
+                        if event != iqs5xx::Event::None {
+                            info!("Event: {:?}", event);
+                        }
+                    }
                 }
             }
             Ok(None) => {
