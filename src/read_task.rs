@@ -8,8 +8,9 @@ use embassy_rp::{
 use embassy_time::{Duration, Timer, block_for};
 use iqs5xx::IQS5xx;
 use log::{info, warn};
+use usbd_hid::descriptor::MouseReport;
 
-use crate::Trackpad;
+use crate::{Trackpad, usb_hid::MOUSE_REPORT_CHANNEL};
 
 // ---------------------------------------------------------------------------
 // Delay adapter
@@ -219,10 +220,22 @@ pub async fn read_task(trackpad: Trackpad) {
                     );
                 }
 
+                let x = report.rel_x.clamp(i8::MIN as i16, i8::MAX as i16) as i8;
+                let y = report.rel_y.clamp(i8::MIN as i16, i8::MAX as i16) as i8;
+
+                if x != 0 || y != 0 {
+                    MOUSE_REPORT_CHANNEL
+                        .send(MouseReport {
+                            buttons: 0,
+                            x,
+                            y,
+                            wheel: 0,
+                            pan: 0,
+                        })
+                        .await;
+                }
+
                 // Interpret the raw report as a high-level event and log it.
-                // iqs5xx::Event derives core::fmt::Debug, so we bridge through
-                // Debug2Format because the crate was compiled against defmt 0.3
-                // while this project uses defmt 1.0.
                 let event = iqs5xx::Event::from(&report);
                 if event != iqs5xx::Event::None {
                     info!("Event: {:?}", event);

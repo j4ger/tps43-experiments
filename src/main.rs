@@ -1,9 +1,6 @@
 #![no_std]
 #![no_main]
 
-mod logger;
-use logger::*;
-
 mod read_task;
 use read_task::*;
 
@@ -12,6 +9,9 @@ use blinker::*;
 
 mod vibrator;
 use vibrator::*;
+
+mod usb_hid;
+use usb_hid::*;
 
 use assign_resources::assign_resources;
 use embassy_executor::Spawner;
@@ -45,11 +45,11 @@ async fn main(spawner: Spawner) {
     let r = split_resources!(p);
     let usb = p.USB;
 
-    spawner.spawn(logger_task(usb)).unwrap();
+    spawner.spawn(usb_hid_task(usb)).unwrap();
 
     embassy_time::Timer::after_millis(100).await;
 
-    log::info!("main: logger started");
+    log::info!("main: usb hid started");
     log::info!("main: spawning blinker_task");
     spawner.spawn(blinker_task(r.led)).unwrap();
 

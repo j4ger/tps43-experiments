@@ -27,7 +27,7 @@ critical-section = "1.1"
 panic-probe = { version = "1.0.0", features = ["print-defmt"] }
 smart-leds = "0.4.0"
 heapless = "0.8"
-usbd-hid = "0.9.0"
+usbd-hid = "0.8.2"
 
 embedded-hal-1 = { package = "embedded-hal", version = "1.0" }
 embedded-hal-async = "1.0"
